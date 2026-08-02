@@ -1,0 +1,31 @@
+{
+  "name": "mcpanel-webui",
+  "version": "1.0.0",
+  "description": "MCPanel as WebUI",
+  "type": "commonjs",
+  "main": "server/index.js",
+  "bin": {
+    "mcpanel-webui": "server/index.js"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js --host 127.0.0.1 --port 8730",
+    "temp": "node scripts/temp-admin-password.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
+  },
+  "author": {
+    "name": "DippyCoder",
+    "email": "dippycoder@gmail.com"
+  },
+  "license": "GPL-3.0-or-later"
+}

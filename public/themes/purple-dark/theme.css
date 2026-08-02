@@ -1,0 +1,13 @@
+/* ═══════════════════════════════════════════════════════
+   Purple Dark - MCPanel Old default theme
+   Author: DippyCoder
+   The classic MCPanel style.
+   ═══════════════════════════════════════════════════════ */
+
+
+:root {
+  /* Suggested native window/taskbar icon for this theme. Honored when the
+     user's App Icon setting is "Auto". Available keys: default, blue, green,
+     red, yellow, black, white, outline, outline-white. */
+  --app-icon: default;
+}

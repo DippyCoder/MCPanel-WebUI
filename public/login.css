@@ -1,0 +1,161 @@
+/* ═══════════════════════════════════════════════════════
+   MCPanel WebUI - sign-in screen
+
+   Only what style.css does not already provide. Every colour, radius,
+   shadow and font here resolves through the app's own custom properties,
+   so an installed theme restyles this page for free - the same reason the
+   page injects the active theme into #theme-override on load.
+   ═══════════════════════════════════════════════════════ */
+
+/* style.css locks the document to the viewport for the panel's own layout.
+   The sign-in screen is a single centred card, and on a phone with the
+   on-screen keyboard raised it needs to be able to scroll. */
+/* login.css is only ever loaded by login.html, so relaxing `html` here cannot
+   reach the panel. */
+html, body.login-body { height: auto; min-height: 100%; overflow: auto; }
+
+.login-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+  background: var(--bg-base);
+  position: relative;
+  isolation: isolate;
+}
+
+/* Ambient accent wash behind the card - the same purple bloom the panel's
+   primary buttons and modals carry, so the screen reads as MCPanel before
+   a single control is touched. */
+.login-body::before {
+  content: '';
+  position: fixed;
+  inset: -20vmax;
+  z-index: -1;
+  background:
+    radial-gradient(48vmax 38vmax at 50% -8%,  rgba(var(--accent-rgb), 0.18), transparent 70%),
+    radial-gradient(38vmax 30vmax at 12% 108%, rgba(var(--accent-rgb), 0.10), transparent 70%);
+  pointer-events: none;
+}
+
+.login-shell {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+
+/* Mirrors .modal's surface treatment rather than extending it, because the
+   card is standalone here - there is no overlay to sit inside. */
+.login-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 34px 32px 30px;
+  background: var(--bg-surface);
+  border: 1px solid rgba(var(--accent-rgb), 0.2);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(var(--accent-rgb), 0.1);
+  animation: slideUp .2s ease;
+}
+
+.login-head { text-align: center; margin-bottom: 26px; }
+
+.login-logo {
+  object-fit: contain;
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
+.login-title {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  background: linear-gradient(135deg, var(--text-primary) 0%, var(--purple-300) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 6px;
+}
+
+.login-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+
+.login-fields { display: flex; flex-direction: column; gap: 14px; }
+
+/* style.css only draws a focus ring via border-color; on a page whose sole
+   purpose is a keyboard-driven form, that is too quiet to navigate by. */
+.login-card .input:focus-visible {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+.login-caps {
+  font-size: 11px;
+  color: var(--warning-box-text);
+  margin-top: 2px;
+}
+
+.login-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--toast-error-bg);
+  border: 1px solid var(--toast-error-border);
+  color: var(--toast-error-text);
+  font-size: 12px;
+  line-height: 1.5;
+  animation: fadeIn .15s ease;
+}
+
+.login-submit {
+  justify-content: center;
+  width: 100%;
+  height: 42px;
+  margin-top: 20px;
+  font-size: 14px;
+}
+
+.login-spinner {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: login-spin .6s linear infinite;
+}
+
+@keyframes login-spin { to { transform: rotate(360deg); } }
+
+.login-foot {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+/* The panel is meant to be reachable from a phone, so the card has to hold
+   together at ~360px without the padding eating the fields. */
+@media (max-width: 420px) {
+  .login-body { padding: 16px 12px calc(16px + env(safe-area-inset-bottom)); }
+  .login-card { padding: 28px 20px 24px; border-radius: var(--radius-lg); }
+  .login-title { font-size: 21px; }
+  .login-logo { width: 46px; height: 46px; margin-bottom: 12px; }
+}
+
+@media (max-height: 560px) {
+  .login-body { align-items: flex-start; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-card, .login-error { animation: none; }
+  .login-spinner { animation-duration: 1.6s; }
+  .btn-primary:hover { transform: none; }
+}
