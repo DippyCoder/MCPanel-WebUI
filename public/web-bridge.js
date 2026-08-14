@@ -883,6 +883,8 @@
 
     getAppSettings: () => _invoke('get_app_settings'),
     saveAppSettings: (settings) => _invoke('save_app_settings', { settings }),
+    getNetworkConfig: () => _invoke('get_network_config'),
+    saveNetworkConfig: (host, port) => _invoke('save_network_config', { host, port }),
     listSystemFonts: () => _invoke('list_system_fonts'),
     shutdownAllServers: () => _invoke('shutdown_all_servers'),
 

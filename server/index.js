@@ -39,9 +39,29 @@ try {
   applog.error(`Permission map unavailable: ${e && e.message}. Non-admin access will be refused.`);
 }
 
+// Fallback layer between the env vars and the hardcoded default: host/port
+// saved from the Settings page's Network panel (server/commands/network.js).
+// --host/--port and MCPANEL_WEBUI_HOST/_PORT both still win over this.
+function readPersistedNetworkConfig() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(paths.networkConfigPath(), 'utf8'));
+    const out = {};
+    if (parsed && typeof parsed.host === 'string' && parsed.host.trim()) out.host = parsed.host.trim();
+    if (parsed && Number.isInteger(parsed.port) && parsed.port > 0 && parsed.port < 65536) out.port = parsed.port;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 function parseArgs(argv) {
-  const out = { host: process.env.MCPANEL_WEBUI_HOST || '127.0.0.1',
-                port: Number(process.env.MCPANEL_WEBUI_PORT) || 8730,
+  const persisted = readPersistedNetworkConfig();
+  // Reachable from other devices out of the box - sign-in is mandatory
+  // regardless of bind address (see the static/API gates below), so this
+  // controls whether the login page itself is LAN-reachable, not whether the
+  // panel is protected. Pass --host 127.0.0.1 to restrict to this machine.
+  const out = { host: process.env.MCPANEL_WEBUI_HOST || persisted.host || '0.0.0.0',
+                port: Number(process.env.MCPANEL_WEBUI_PORT) || persisted.port || 8730,
                 token: process.env.MCPANEL_WEBUI_TOKEN || null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -60,8 +80,10 @@ if (ARGS.help) {
 
   mcpanel-webui [--host <addr>] [--port <n>] [--token <secret>]
 
-  --host    interface to bind (default 127.0.0.1; use 0.0.0.0 to expose)
-  --port    port to listen on (default 8730)
+  --host    interface to bind (default 0.0.0.0, reachable on the LAN; use
+            127.0.0.1 to restrict to this machine)
+  --port    port to listen on (default 8730; also changeable from
+            Settings -> Network once signed in as an admin)
   --token   an EXTRA shared secret required on top of signing in. Sign-in is
             always required; this is a second outer gate for panels exposed
             to an untrusted network.
@@ -431,6 +453,16 @@ app.use(express.static(PUBLIC_DIR, {
 const server = http.createServer(app);
 state.httpServer = server;
 
+// Tracked so a network-config rebind (state.applyNetworkConfig below) can
+// force-close everything before re-listening. server.close()'s callback only
+// fires once every open connection ends on its own, and a keep-alive HTTP
+// connection or an open WebSocket would otherwise hang it indefinitely.
+const openSockets = new Set();
+server.on('connection', (socket) => {
+  openSockets.add(socket);
+  socket.on('close', () => openSockets.delete(socket));
+});
+
 const wss = new WebSocketServer({ noServer: true });
 
 function rejectUpgrade(socket, status = '401 Unauthorized') {
@@ -506,12 +538,72 @@ if (typeof commands.ensure_builtin_themes === 'function') {
   Promise.resolve(commands.ensure_builtin_themes({}, SYSTEM_CTX)).catch(() => {});
 }
 
-server.listen(ARGS.port, ARGS.host, async () => {
-  const shown = ARGS.host === '0.0.0.0' ? 'localhost' : ARGS.host;
+// Prints every URL other devices can reach the panel on - just `localhost`
+// when bound to a specific address, plus each LAN IPv4 address when bound to
+// the wildcard (0.0.0.0/::). Called on initial startup and again after a
+// live network-config rebind (state.applyNetworkConfig below).
+function printListeningBanner() {
   const tokenPart = ARGS.token ? `?token=${ARGS.token}` : '';
-  const url = `http://${shown}:${ARGS.port}/${tokenPart}`;
-  process.stdout.write(`\n  MCPanel WebUI v${pkg.version}\n  →  ${url}\n\n`);
+  const wildcard = ARGS.host === '0.0.0.0' || ARGS.host === '::';
+  const urls = [`http://${wildcard ? 'localhost' : ARGS.host}:${ARGS.port}/${tokenPart}`];
+  if (wildcard) {
+    for (const { address } of util.lanAddresses()) {
+      urls.push(`http://${address}:${ARGS.port}/${tokenPart}   (LAN)`);
+    }
+  }
+  process.stdout.write(`\n  MCPanel WebUI v${pkg.version}\n` +
+    urls.map(u => `  →  ${u}`).join('\n') + '\n\n');
   applog.info(`WebUI listening on ${ARGS.host}:${ARGS.port}`);
+}
+
+state.networkInfo = () => ({ host: ARGS.host, port: ARGS.port });
+
+// Rebinds the same http.Server / express app / WebSocketServer to a new
+// host/port without restarting the process, so a port change from the
+// Settings page takes effect immediately. Drops every open connection
+// (including the caller's own) - unavoidable, since the listening socket
+// itself is moving. Rejects on listen errors (e.g. port already in use)
+// rather than crashing the process.
+let rebindInProgress = false;
+state.applyNetworkConfig = ({ host, port }) => {
+  if (rebindInProgress) {
+    return Promise.reject(new Error('A network config change is already in progress.'));
+  }
+  rebindInProgress = true;
+
+  return new Promise((resolve, reject) => {
+    const settle = (err) => {
+      rebindInProgress = false;
+      if (err) reject(err); else resolve({ host, port });
+    };
+
+    for (const ws of wss.clients) { try { ws.terminate(); } catch { /* ignore */ } }
+    for (const socket of openSockets) { try { socket.destroy(); } catch { /* ignore */ } }
+    openSockets.clear();
+
+    server.close((closeErr) => {
+      if (closeErr) { settle(closeErr); return; }
+
+      const onError = (err) => {
+        server.removeListener('listening', onListening);
+        settle(err);
+      };
+      const onListening = () => {
+        server.removeListener('error', onError);
+        ARGS.host = host;
+        ARGS.port = port;
+        printListeningBanner();
+        settle();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, host);
+    });
+  });
+};
+
+server.listen(ARGS.port, ARGS.host, async () => {
+  printListeningBanner();
 
   if (!permissions) {
     process.stdout.write('  ⚠  server/permissions.js failed to load - every non-admin request\n' +

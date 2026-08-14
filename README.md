@@ -78,14 +78,18 @@ npm install
 npm start
 ```
 
-The URL is printed on startup:
+The panel binds to `0.0.0.0` by default, so it's reachable from other devices on your
+network right away - every URL it's reachable on is printed on startup:
 
 ```
   MCPanel WebUI vx.x.x
-  →  http://127.0.0.1:8730/
+  →  http://localhost:8730/
+  →  http://192.168.1.23:8730/   (LAN)
 ```
 
-Open it in any modern browser.
+Open either in any modern browser. Sign-in is required either way (see
+[Accounts & Permissions](#accounts--permissions)), so exposing it on the LAN doesn't
+mean exposing the panel itself - just the login page.
 
 ---
 
@@ -98,9 +102,15 @@ node server/index.js --help
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--host` | `127.0.0.1` | Interface to bind. Use `0.0.0.0` to expose on the network. |
+| `--host` | `0.0.0.0` | Interface to bind. Use `127.0.0.1` to restrict to this machine only. |
 | `--port` | `8730` | Port to listen on. |
 | `--token` | *(none)* | Require a shared secret *in front of* the login page. Optional extra layer - the account login is the real authentication. |
+
+`--host` and `--port` are also changeable after the fact from **Settings → Network**
+(admin only) without restarting the process - the panel rebinds live and prints the new
+URL(s). That setting is saved to `network.json` in the data directory and used as the
+default on the next launch, but the flags above and their environment variables still
+override it if set.
 
 Every flag has an environment-variable equivalent:
 
@@ -114,9 +124,12 @@ Every flag has an environment-variable equivalent:
 When a token is set, the startup URL includes it (`http://host:8730/?token=…`). Opening that URL once stores the token in a `mcpanel_token` cookie, so subsequent requests and the WebSocket carry it automatically. Scripted calls can send it as an `X-MCPanel-Token` header instead.
 
 ```bash
-# Expose on the LAN. The account login always applies; the token is an
-# additional gate in front of it.
-node server/index.js --host 0.0.0.0 --token "$(openssl rand -hex 24)"
+# Add an extra shared-secret gate in front of the login page (LAN exposure is
+# already the default - see above). The account login still always applies.
+node server/index.js --token "$(openssl rand -hex 24)"
+
+# Restrict to this machine only, e.g. if you're fronting it with a reverse proxy.
+node server/index.js --host 127.0.0.1
 ```
 
 ---
@@ -172,7 +185,7 @@ MCPanel-WebUI grants **full control over your Minecraft servers** and **file-lev
 - **Sessions are httpOnly cookies** (`mcpanel_session`, `SameSite=Lax`, `Secure` when the request arrived over HTTPS). The token is stored in the database only as a SHA-256 hash, and passwords as PBKDF2-HMAC-SHA256 - a stolen database yields neither.
 - **Permissions are enforced on the server**, on every RPC call, every upload and the WebSocket upgrade. The UI also hides what you can't use, but that is convenience only - hiding a button is not what stops the call.
 - **Failed logins are rate-limited** per IP, and login answers identically for an unknown user and a wrong password, so the endpoint can't be used to enumerate accounts.
-- **It binds to `127.0.0.1` by default.**
+- **It binds to `0.0.0.0` by default** so it's reachable from other devices on the LAN out of the box - but login is required regardless of bind address, so this only affects who can *see the login page*, not who can act as a signed-in user. Pass `--host 127.0.0.1` (or set it from Settings → Network) to restrict to this machine only.
 - `--token` still works as an **optional outer gate** in front of the login page - defence in depth, not the primary auth.
 
 **What it does not protect against - know these before exposing it:**

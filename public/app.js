@@ -170,6 +170,56 @@ async function saveMaxLogFiles() {
   await window.mcpanel.saveAppSettings(_appSettings);
 }
 
+// ─── Network settings ───────────────────────────────────────────────────────
+// Host/port the WebUI itself listens on - separate from _appSettings (those
+// are client preferences; this is the server's own listening socket, applied
+// live by save_network_config without a process restart).
+
+async function loadNetworkSettings() {
+  const hostEl = document.getElementById('setting-network-host');
+  const portEl = document.getElementById('setting-network-port');
+  const reachableEl = document.getElementById('network-reachable-at');
+  if (!hostEl || !portEl || !reachableEl) return;
+
+  let cfg;
+  try {
+    cfg = await window.mcpanel.getNetworkConfig();
+  } catch (e) {
+    reachableEl.textContent = 'Could not load network settings.';
+    return;
+  }
+
+  hostEl.value = cfg.host || '0.0.0.0';
+  portEl.value = cfg.port || 8730;
+
+  const port = cfg.port || 8730;
+  const urls = [`http://localhost:${port}/`];
+  for (const addr of cfg.lanAddresses || []) {
+    urls.push(`http://${addr.address}:${port}/`);
+  }
+  reachableEl.innerHTML = urls.map(u => `<div class="mono">${u}</div>`).join('');
+}
+
+async function saveNetworkSettings() {
+  const hostEl = document.getElementById('setting-network-host');
+  const portEl = document.getElementById('setting-network-port');
+  const host = (hostEl.value || '').trim();
+  const port = parseInt(portEl.value, 10);
+
+  if (!host) { toast('Host is required', 'error'); return; }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    toast('Port must be between 1 and 65535', 'error');
+    return;
+  }
+
+  try {
+    await window.mcpanel.saveNetworkConfig(host, port);
+    toast(`Applying ${host}:${port} - this tab will disconnect`, 'success');
+  } catch (e) {
+    toast(e && e.message ? e.message : 'Failed to save network settings', 'error');
+  }
+}
+
 // ─── App Icon ─────────────────────────────────────────────────────────────────
 // Swaps the in-app titlebar logo (top-left corner) between bundled variants.
 // This is purely an in-app HTML image - it does NOT touch the native OS window/
@@ -235,7 +285,7 @@ function showPage(page) {
 
   if (page === 'profiles') renderProfilesGrid();
   if (page === 'servers') renderServersGrid();
-  if (page === 'settings') renderInstalledThemes();
+  if (page === 'settings') { renderInstalledThemes(); loadNetworkSettings(); }
 }
 
 function openServerDetail(id) {

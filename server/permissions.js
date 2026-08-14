@@ -111,6 +111,11 @@ const MAP = {
   get_app_settings: 'settings.view',
   get_app_log_path: 'settings.view',
   save_app_settings: 'settings.manage',
+  get_network_config: 'settings.view',
+  // Rebinds the panel's own listening socket - a meaningfully different risk
+  // than a preferences save, so it's restricted by identity like the other
+  // admin-only entries below rather than gated by a grantable permission.
+  save_network_config: DENY,
   // save_config rewrites the WHOLE config.json - including every server's
   // `dir` - so it is a path-rewrite primitive, not a preferences save. But
   // app.js also persists the active theme through it, so demanding

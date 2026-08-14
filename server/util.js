@@ -7,6 +7,7 @@
 
 const fs = require('fs');
 const fsp = require('fs/promises');
+const os = require('os');
 const path = require('path');
 const paths = require('./paths');
 
@@ -194,6 +195,22 @@ async function downloadTo(url, dest, { timeout = 60000 } = {}) {
   }
 }
 
+/**
+ * Non-internal IPv4 addresses of this machine, e.g. [{name: 'wlan0', address:
+ * '192.168.1.23'}]. Used to tell an operator what LAN URL other devices should
+ * actually use, since the server itself may be listening on 0.0.0.0.
+ */
+function lanAddresses() {
+  const out = [];
+  const ifaces = os.networkInterfaces() || {};
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    for (const addr of addrs || []) {
+      if (addr.family === 'IPv4' && !addr.internal) out.push({ name, address: addr.address });
+    }
+  }
+  return out;
+}
+
 module.exports = {
   DEFAULT_CONFIG,
   readConfig,
@@ -209,4 +226,5 @@ module.exports = {
   walkDirTree,
   fetchJson,
   downloadTo,
+  lanAddresses,
 };

@@ -1060,6 +1060,35 @@
           </div>
         </div>
         <div class="settings-section">
+          <h3>Network</h3>
+          <p class="section-desc">Host and port MCPanel-WebUI itself listens on. Applying a change reconnects the panel immediately on the new address - this tab (and any other open session) will need to reload at the new URL. Restricted to administrators.</p>
+          <div class="setting-row">
+            <div class="setting-row-text">
+              <div class="setting-label">Host</div>
+              <div class="setting-desc">0.0.0.0 to be reachable from other devices on the network; 127.0.0.1 to restrict to this machine.</div>
+            </div>
+            <div class="setting-controls">
+              <input type="text" id="setting-network-host" class="input" value="0.0.0.0" placeholder="0.0.0.0">
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-row-text">
+              <div class="setting-label">Port</div>
+              <div class="setting-desc">1-65535.</div>
+            </div>
+            <div class="setting-controls">
+              <input type="number" id="setting-network-port" class="input" min="1" max="65535" value="8730">
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-row-text">
+              <div class="setting-label">Currently reachable at</div>
+              <div class="setting-desc" id="network-reachable-at">-</div>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="saveNetworkSettings()">Apply</button>
+        </div>
+        <div class="settings-section">
           <h3>Java Detection</h3>
           <p class="section-desc">Detected Java installations on your system</p>
           <button class="btn-sm" onclick="detectJdk()">

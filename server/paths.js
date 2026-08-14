@@ -37,6 +37,9 @@ const p = {
   profilesDir: () => path.join(mcpanelHome(), 'profiles'),
   backupsDir: (serverId) => path.join(mcpanelHome(), 'backups', serverId),
   appSettingsPath: () => path.join(mcpanelHome(), 'app-settings.json'),
+  // WebUI-only: persisted host/port override set from the Settings page, one
+  // layer below --host/--port and MCPANEL_WEBUI_HOST/_PORT in server/index.js.
+  networkConfigPath: () => path.join(mcpanelHome(), 'network.json'),
   schedulesPath: () => path.join(mcpanelHome(), 'schedules.json'),
   defaultThemePath: () => path.join(mcpanelHome(), 'default-theme'),
   firstStartFlag: () => path.join(mcpanelHome(), 'debug_first_start'),
