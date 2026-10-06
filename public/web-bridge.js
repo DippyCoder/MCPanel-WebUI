@@ -23,6 +23,13 @@
   // cookies reliably across every browser, so it repeats the token explicitly.
   const _token = new URLSearchParams(location.search).get('token');
 
+  // Errors keep the backend's machine-readable `code` next to its message.
+  // The message is always shown as-is (the CLI owns the wording); `code` is
+  // only for logic, so a code this build has never heard of still displays.
+  function _coded(message, code) {
+    return Object.assign(new Error(message), { code: code || 'error' });
+  }
+
   async function _invoke(cmd, args) {
     // PTY sessions are keyed to the socket that opened them on the backend, so
     // terminal traffic has to travel over the WebSocket rather than HTTP.
@@ -38,15 +45,19 @@
         body: JSON.stringify({ cmd, args: args || {} }),
       });
     } catch (e) {
-      throw new Error(`MCPanel WebUI server unreachable: ${e.message}`);
+      throw _coded(`MCPanel WebUI server unreachable: ${e.message}`, 'webui_unreachable');
     }
-    if (res.status === 401) throw new Error('Unauthorized - check the WebUI token');
     let body;
     try { body = await res.json(); }
-    catch { throw new Error(`Malformed response from ${cmd}`); }
+    catch {
+      if (res.status === 401) throw _coded('Unauthorized - check the WebUI token', 'unauthorized');
+      throw _coded(`Malformed response from ${cmd}`, 'bad_response');
+    }
     // app.js relies on rejections for its try/catch and .catch() paths, so an
     // error result must become a real rejected promise, never a value.
-    if (!body || body.ok !== true) throw new Error((body && body.error) || `${cmd} failed`);
+    if (!body || body.ok !== true) {
+      throw _coded((body && body.error) || `${cmd} failed`, body && body.code);
+    }
     return body.value;
   }
 
@@ -120,9 +131,19 @@
   async function cli(args) {
     // Block until check is done AND it passed. This prevents run_cli from
     // spawning subprocesses before we know mcpanel resolves to the CLI tool.
-    if (window._cliOk !== true) throw new Error('MCPanel-CLI is not available');
+    if (window._cliOk !== true) throw _coded('MCPanel-CLI is not available', 'cli_unavailable');
     const raw = await _invoke('run_cli', { args });
-    return JSON.parse(raw);
+    // CLI failures arrive as {error, code} documents and are returned as
+    // values, exactly like successes - callers check `.error`.
+    try { return JSON.parse(raw); }
+    catch { throw _coded(`MCPanel-CLI returned unreadable output: ${String(raw).slice(0, 300)}`, 'cli_bad_output'); }
+  }
+
+  // cli(), but a failure to run the CLI at all also becomes an {error, code}
+  // value - for calls whose callers only ever check `.error`.
+  async function _cliSafe(args) {
+    try { return await cli(args); }
+    catch (e) { return { error: e.message, code: e.code || 'error' }; }
   }
 
   // mcpanel.json is the server's own manifest (id, dir, etc.) - not something
@@ -296,7 +317,9 @@
     e.stopPropagation();
 
     // dataTransfer is neutered once this handler returns, so the entries must
-    // be captured synchronously.
+    // be captured synchronously - and so must the cursor position, which
+    // app.js uses to drop into the folder row under it.
+    const position = { x: e.clientX, y: e.clientY };
     const entries = [];
     for (const item of e.dataTransfer.items) {
       if (item.kind !== 'file' || typeof item.webkitGetAsEntry !== 'function') continue;
@@ -311,7 +334,7 @@
       // app.js's handler is async and awaits the upload, so awaiting it here
       // means the staging area is only cleared once the copy has finished.
       await Promise.all(handlers.map(fn => {
-        try { return Promise.resolve(fn({ payload: { paths } })); }
+        try { return Promise.resolve(fn({ payload: { paths, position, logical: true } })); }
         catch (err) { console.error(err); return Promise.resolve(); }
       }));
       fetch('/api/upload-stage/clear', {
@@ -545,6 +568,12 @@
   }
 
   window.mcpanel = {
+    // Which frontend this is - addon UI scripts (addons-ui.js) read it.
+    product: 'webui',
+    // Raw `mcpanel api <args…>` for addon UI scripts and the addon browser.
+    // CLI failures resolve as {error, code} documents; failing to reach the
+    // CLI at all rejects with an Error carrying `.code`.
+    cli: (args) => cli(Array.isArray(args) ? args.map(String) : []),
     getConfig: async () => {
       try { return await cli(['config', 'show']); }
       catch { return { servers: [], jdkPaths: [], activeTheme: null }; }
@@ -578,8 +607,12 @@
       return JSON.parse(raw);
     },
 
-    deleteServer: async (id) => {
-      return cli(['delete', 'server', '-id', id]);
+    // keepFiles: only remove it from MCPanel's list ("Remove"); otherwise the
+    // server's files are deleted too - a linked server's original folder included.
+    deleteServer: async (id, { keepFiles = false } = {}) => {
+      const args = ['delete', 'server', '-id', id];
+      if (keepFiles) args.push('--keep-files');
+      return cli(args);
     },
 
     updateServer: async (id, updates) => {
@@ -606,6 +639,13 @@
       const result = await cli(['fetch', 'log', '-id', id]);
       return Array.isArray(result) ? result : [];
     },
+
+    // The server's own logs/ folder (Logs tab). All three resolve to the CLI's
+    // document - an {error, code} one included - and never throw.
+    listLogFiles: (id) => _cliSafe(['fetch', 'logfiles', '-id', id]),
+    readLogFile: (id, file) => _cliSafe(['fetch', 'logfile', '-id', id, '-file', file]),
+    // Uploads (at most the newest 10k lines / 25 MB of) a log file to mclo.gs.
+    uploadLog: (id, file) => _cliSafe(['upload-log', '-id', id, '-file', file]),
 
     // Reads log entries written after `offset` bytes. Returns { lines, offset }.
     // Used by the 15 ms console poll; bypasses the CLI for low-latency file reads.
@@ -694,6 +734,8 @@
       if (data.version) args.push('-v', data.version);
       if (data.javaPath) args.push('-java', data.javaPath);
       if (data.javaArgs) args.push('-jargs', data.javaArgs);
+      // Use the folder in place instead of copying it into MCPanel's dir.
+      if (data.link) args.push('--link');
       const raw = await _invoke('import_server_cmd', { args });
       return JSON.parse(raw);
     },

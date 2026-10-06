@@ -188,6 +188,16 @@ async function dispatch(cmd, args, user = auth.SYSTEM_USER) {
   return await fn(args || {}, { ...ctx, user });
 }
 
+/**
+ * The error code to report alongside a message. CLI failures carry the code
+ * the CLI sent (see server/cli.js CliError); anything else is generic.
+ */
+function errorCode(e) {
+  if (e && typeof e.code === 'string' && e.code) return e.code;
+  if (e && e.forbidden) return 'forbidden';
+  return 'error';
+}
+
 const app = express();
 app.disable('x-powered-by');
 // The Upload button in the file manager hands write_server_file a plain byte
@@ -215,7 +225,7 @@ app.use((req, res, next) => {
       : res.setHeader('Set-Cookie', `mcpanel_token=${ARGS.token}; Path=/; SameSite=Strict`);
   }
   if (req.path.startsWith('/api/') && !tokenOk(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    return res.status(401).json({ ok: false, error: 'Unauthorized', code: 'unauthorized' });
   }
   next();
 });
@@ -243,7 +253,10 @@ app.post('/api/login', async (req, res) => {
     auth.setSessionCookie(res, req, token, expiresAt);
     res.json({ ok: true, user, expiresAt });
   } catch (e) {
-    res.status(e.rateLimited ? 429 : 401).json({ ok: false, error: e.message });
+    // A CLI/addon outage isn't a wrong password - report it as a server error
+    // so the login page doesn't tell the user to retype their credentials.
+    const status = e.rateLimited ? 429 : (e.authFailure ? 401 : 503);
+    res.status(status).json({ ok: false, error: e.message, code: errorCode(e) });
   }
 });
 
@@ -254,7 +267,7 @@ app.post('/api/logout', async (req, res) => {
 });
 
 app.get('/api/me', async (req, res) => {
-  if (!req.user) return res.status(401).json({ ok: false, error: 'Not signed in', authRequired: true });
+  if (!req.user) return res.status(401).json({ ok: false, error: 'Not signed in', code: 'not_signed_in', authRequired: true });
   // `settings` carries only the install-wide switches a normal user needs to
   // render their own account panel - reading the full set requires
   // accounts.manage, which most users do not have.
@@ -262,7 +275,7 @@ app.get('/api/me', async (req, res) => {
 });
 
 app.post('/api/change-password', async (req, res) => {
-  if (!req.user) return res.status(401).json({ ok: false, error: 'Not signed in', authRequired: true });
+  if (!req.user) return res.status(401).json({ ok: false, error: 'Not signed in', code: 'not_signed_in', authRequired: true });
   const { currentPassword, newPassword } = req.body || {};
   try {
     await auth.changePassword(req.user.username, currentPassword, newPassword, req.sessionToken);
@@ -271,7 +284,7 @@ app.post('/api/change-password', async (req, res) => {
     auth.clearSessionCookie(res, req);
     res.json({ ok: true, reauth: true });
   } catch (e) {
-    res.status(400).json({ ok: false, error: e.message });
+    res.status(400).json({ ok: false, error: e.message, code: errorCode(e) });
   }
 });
 
@@ -299,13 +312,13 @@ app.use('/api', (req, res, next) => {
   if (req.user) return next();
   // `req.path` is relative to the '/api' mount point here.
   if (isPreauthRequest(req)) return next();
-  res.status(401).json({ ok: false, error: 'Sign in to continue', authRequired: true });
+  res.status(401).json({ ok: false, error: 'Sign in to continue', code: 'not_signed_in', authRequired: true });
 });
 
 app.post('/api/invoke', async (req, res) => {
   const { cmd, args } = req.body || {};
   if (typeof cmd !== 'string') {
-    return res.status(400).json({ ok: false, error: 'Missing cmd' });
+    return res.status(400).json({ ok: false, error: 'Missing cmd', code: 'invalid_arguments' });
   }
   try {
     // An anonymous caller only got past the gate above for a PREAUTH_COMMANDS
@@ -318,8 +331,10 @@ app.post('/api/invoke', async (req, res) => {
     res.json({ ok: true, value: value === undefined ? null : value });
   } catch (e) {
     const msg = e && e.message ? e.message : String(e);
-    if (e && e.forbidden) return res.status(403).json({ ok: false, error: msg, forbidden: true });
-    res.json({ ok: false, error: msg });
+    if (e && e.forbidden) {
+      return res.status(403).json({ ok: false, error: msg, code: 'forbidden', forbidden: true });
+    }
+    res.json({ ok: false, error: msg, code: errorCode(e) });
   }
 });
 
@@ -614,6 +629,14 @@ server.listen(ARGS.port, ARGS.host, async () => {
   const seeded = await auth.ensureSeeded();
   if (seeded && seeded.error) {
     process.stdout.write(`  ⚠  ${seeded.error}\n\n`);
+  }
+
+  // Permission descriptions for "you can't do that" messages come from the
+  // addon itself; refreshed periodically so an addon upgrade is picked up.
+  if (permissions && typeof permissions.loadCatalog === 'function') {
+    await permissions.loadCatalog(cli.runCliJson);
+    const t = setInterval(() => { permissions.loadCatalog(cli.runCliJson); }, 10 * 60 * 1000);
+    if (t.unref) t.unref();
   }
 
   // The old warning was about --token. Now that sign-in is mandatory, the real

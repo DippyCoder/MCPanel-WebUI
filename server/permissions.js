@@ -12,10 +12,10 @@
      1. Fail CLOSED. No user, a disabled user, an unknown command, or an
         unclassifiable CLI argv all deny. A command added later without a MAP
         entry is denied, not allowed (and warns at boot - see verifyCoverage).
-     2. The permission STRINGS are not defined here. They come from
-        mcpanel-cli's accounts addon
-        (mcpanel/bundled_addons/accounts/permissions.py), which is the single
-        source of truth; this file only maps commands onto them.
+     2. The permission STRINGS are not defined here. They come from the
+        MCPanel-Accounts addon (accounts/permissions.py in that repository),
+        which is the single source of truth - their descriptions included,
+        see loadCatalog(). This file only maps commands onto them.
      3. Admin (isAdmin, or a "*" grant) bypasses everything except the handful
         of commands marked DENY, which are restricted to admins by definition.
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -178,6 +178,8 @@ const CLI_MAP = {
   'fetch stats': 'servers.view',
   'fetch files': 'files.read',
   'fetch log': 'servers.console',
+  'fetch logfiles': 'servers.console',
+  'fetch logfile': 'servers.console',
   'fetch profile': 'profiles.view',
   'fetch system': 'system.view',
   'fetch update': 'system.view',
@@ -193,6 +195,9 @@ const CLI_MAP = {
   'logs': 'servers.console',
   'console': 'servers.console',
   'sessions': 'servers.console',
+  // Publishes a log file on mclo.gs - the same content servers.console can
+  // already read, so no separate permission.
+  'upload-log': 'servers.console',
   'stats': 'servers.view',
   'files': 'files.read',
   'ping': 'servers.view',
@@ -248,6 +253,11 @@ const CLI_MAP = {
   // themselves, or install an addon (arbitrary code) into the backend.
   'accounts': 'accounts.manage',
   'addons': DENY,
+  // Every signed-in user's panel loads the installed addons' UI files; they
+  // are read-only and contain nothing the static frontend doesn't already.
+  'addons ui': null,
+  // Installing/updating addons runs third-party code on the host.
+  'mclib': DENY,
 
   // stops every server on the host
   'shutdown': DENY,
@@ -306,59 +316,52 @@ function isAdmin(user) {
  * Returns a string, an array of strings, null (always allowed), or DENY.
  * An unmapped command returns DENY - new commands are closed by default.
  */
+// `import server --link` registers an arbitrary folder on the HOST as a
+// server, in place - after which files.read/write would reach anything in it.
+// Copy-imports are servers.create; linking is admin-only.
+function wantsLink(argv) {
+  return Array.isArray(argv) && argv.some(a => a === '--link');
+}
+
 function requiredPermission(cmd, args) {
   if (!Object.prototype.hasOwnProperty.call(MAP, cmd)) return DENY;
   const req = MAP[cmd];
-  if (req === '__RUN_CLI__') return cliPermission(args && args.args);
+  const argv = args && args.args;
+  if ((cmd === 'import_server_cmd' || req === '__RUN_CLI__') && wantsLink(argv)) return DENY;
+  if (req === '__RUN_CLI__') return cliPermission(argv);
   return req;
 }
 
-// Display-only phrasing for denial messages. The authoritative catalogue lives
-// in the accounts addon; this table exists so a refusal reads like a sentence
-// instead of a permission string, and falls back gracefully when it doesn't
-// know a name (e.g. one added to the addon after this file was written).
-const PHRASING = {
-  'accounts.view': 'view user accounts',
-  'accounts.manage': 'manage user accounts',
-  'self.password': 'change your own password',
-  'servers.view': 'view servers',
-  'servers.create': 'create servers',
-  'servers.duplicate': 'duplicate servers',
-  'servers.edit': "change a server's settings",
-  'servers.delete': 'delete servers',
-  'servers.start': 'start servers',
-  'servers.stop': 'stop servers',
-  'servers.console': 'read server consoles',
-  'servers.command': 'send console commands',
-  'files.read': 'read server files',
-  'files.write': 'edit server files',
-  'files.delete': 'delete or rename server files',
-  'files.upload': 'upload files',
-  'files.download': 'download files',
-  'profiles.view': 'view profiles',
-  'profiles.manage': 'manage profiles',
-  'plugins.view': 'browse plugins and mods',
-  'plugins.install': 'install plugins and mods',
-  'backups.view': 'view backups',
-  'backups.create': 'create backups',
-  'backups.restore': 'restore backups',
-  'backups.delete': 'delete backups',
-  'schedules.view': 'view scheduled tasks',
-  'schedules.manage': 'manage scheduled tasks',
-  'proxy.manage': 'manage proxy links',
-  'themes.view': 'use themes',
-  'themes.manage': 'install and delete themes',
-  'system.view': 'view system information',
-  'settings.view': 'view application settings',
-  'settings.manage': 'change application settings',
-  'terminal.access': 'open a terminal on the host',
-  'cli.raw': 'run arbitrary MCPanel-CLI commands',
-};
+// Permission descriptions for denial messages, as published by the accounts
+// addon (`mcpanel api accounts perms`). Loaded at boot by loadCatalog() rather
+// than kept as a copy here, so a permission the addon adds later is described
+// properly without a WebUI update. Until it loads (or if it can't), messages
+// fall back to the bare permission string.
+let DESCRIPTIONS = Object.create(null);
+
+/**
+ * Fetches the permission catalogue from the accounts addon. `runCliJson` is
+ * server/cli.js's. Never throws - a failure just keeps the previous table.
+ */
+async function loadCatalog(runCliJson) {
+  try {
+    const r = await runCliJson(['accounts', 'perms']);
+    if (!r || r.error || !Array.isArray(r.permissions)) return false;
+    const next = Object.create(null);
+    for (const p of r.permissions) {
+      if (p && typeof p.name === 'string') next[p.name] = String(p.description || '');
+    }
+    DESCRIPTIONS = next;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function explain(permission) {
-  const phrase = PHRASING[permission];
-  return phrase
-    ? `Your account does not have permission to ${phrase} (${permission}).`
+  const desc = DESCRIPTIONS[permission];
+  return desc
+    ? `Your account is missing the "${permission}" permission (${desc}).`
     : `Your account is missing the "${permission}" permission.`;
 }
 
@@ -426,6 +429,7 @@ module.exports = {
   requiredPermission,
   check,
   explain,
+  loadCatalog,
   granted,
   isAdmin,
   cliPermission,

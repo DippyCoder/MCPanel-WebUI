@@ -50,6 +50,8 @@ Full parity with the desktop app:
 
 Plus what the desktop app has no need for:
 
+- **Addons** - browse [MCLib](https://github.com/DippyCoder/MCLib) and other addon libraries from the Addons page and install, update, downgrade or remove addons (after accepting the third-party disclaimer). Addons can add their own pages and server tabs or change existing ones, styled by your theme
+- **Import any server folder** - no MCPanel config needed (software, version, port and RAM are detected); optionally *link* the folder so MCPanel uses it in place instead of copying it
 - **Accounts & permissions** - login required, per-account roles and permissions, managed in-app or from the CLI ([details](#accounts--permissions))
 
 ---
@@ -57,7 +59,8 @@ Plus what the desktop app has no need for:
 ## Requirements
 
 - **Node.js 18 or newer**
-- **[mcpanel-cli](https://github.com/DippyCoder/MCPanel-CLI) v1.3.0 or newer** - the WebUI is a frontend over the CLI in exactly the same way the desktop app is. Without it, the panel loads and shows the same "CLI missing" modal the desktop app shows. It must also be new enough to include the bundled **`accounts` addon**, which is where logins come from - check with `mcpanel addons list`.
+- **[mcpanel-cli](https://github.com/DippyCoder/MCPanel-CLI) v1.4.0 or newer** - the WebUI is a frontend over the CLI in exactly the same way the desktop app is. Without it, the panel loads and shows the same "CLI missing" modal the desktop app shows.
+- **The [MCPanel-Accounts](https://github.com/DippyCoder/MCPanel-Accounts) addon** - where logins come from. It's no longer bundled with the CLI; install it once from [MCLib](https://github.com/DippyCoder/MCLib) with `mclib mclib install accounts` and check with `mcpanel addons list`. Without it the server starts but prints how to install it, and sign-in reports the same.
 - **Java** - to actually run Minecraft servers
 - **Python 3 + pip** - to install the CLI
 
@@ -138,7 +141,7 @@ node server/index.js --host 127.0.0.1
 
 The panel is meant to be reached from other devices, so **it requires a login**. A request for `/` returns the login page, and the panel's own code - `index.html`, `app.js`, `web-bridge.js`, `accounts-ui.js`, `lib/` - is withheld until there's a session. Only what the login page itself needs is readable anonymously: `login.*`, `style.css`, and the `fonts/`, `themes/` and `assets/` directories, so the sign-in screen still renders in your chosen theme.
 
-Accounts don't live in the WebUI. They come from the **`accounts` addon bundled with MCPanel-CLI**, which stores them in SQLite at `<data dir>/addon-data/accounts/accounts.db`. The CLI and the panel therefore share one user database: an account you create with `mcpanel accounts create` works in the panel immediately, and vice versa.
+Accounts don't live in the WebUI. They come from the **[MCPanel-Accounts](https://github.com/DippyCoder/MCPanel-Accounts) addon for MCPanel-CLI**, which stores them in SQLite at `<data dir>/addon-data/accounts/accounts.db`. The CLI and the panel therefore share one user database: an account you create with `mcpanel accounts create` works in the panel immediately, and vice versa.
 
 > **The default login is `admin` / `admin`.** Change it as soon as you log in - the panel flags the account until you do, and the server prints a startup warning while the default password is still in use.
 >
@@ -169,7 +172,13 @@ Install-wide switches live alongside the accounts - for example `allow_self_pass
 mcpanel accounts settings --set allow_self_password_change=false
 ```
 
-Full reference: **[the accounts addon README](https://github.com/DippyCoder/MCPanel-CLI/blob/main/mcpanel/bundled_addons/accounts/README.md)**.
+Full reference: **[the MCPanel-Accounts README](https://github.com/DippyCoder/MCPanel-Accounts)**.
+
+Permission names *and* their descriptions come from the addon too (`mcpanel api accounts perms`) - the WebUI only maps its own commands onto them, so a permission the addon adds later is described correctly in "you can't do that" messages without a WebUI update.
+
+### Errors
+
+The WebUI never keeps its own list of error texts. Every failure from the CLI (or an addon) arrives as `{"error": "<message>", "code": "<code>"}`; the panel shows `error` exactly as sent and passes `code` along (`/api/invoke` replies `{ok: false, error, code}`, and rejected calls in the browser carry `err.code`). So an error that only exists in a newer CLI still reads correctly in an older WebUI. The few codes the WebUI mints itself are for failures the CLI can't report: `cli_unavailable`, `cli_failed`, `cli_bad_output`, `accounts_addon_missing`, `forbidden`, `not_signed_in`.
 
 ---
 
@@ -313,7 +322,7 @@ MCPanel-WebUI/
 | Host | Node.js ≥18, [Express](https://expressjs.com) + [ws](https://github.com/websockets/ws) |
 | Backend | [mcpanel-cli](https://github.com/DippyCoder/MCPanel-CLI) (Python CLI, `mcpanel api` JSON surface) |
 | Frontend | Vanilla HTML / CSS / JS - the panel itself unchanged from [MCPanel](https://github.com/DippyCoder/MCPanel) |
-| Auth | [`accounts`](https://github.com/DippyCoder/MCPanel-CLI/blob/main/mcpanel/bundled_addons/accounts/README.md) addon (SQLite, PBKDF2) via the CLI; httpOnly session cookie |
+| Auth | [MCPanel-Accounts](https://github.com/DippyCoder/MCPanel-Accounts) addon (SQLite, PBKDF2) via the CLI; httpOnly session cookie |
 | Editor | [Ace](https://ace.c9.io) (in-app file editing) |
 | Terminal | [xterm.js](https://xtermjs.org) + `node-pty` |
 | Archives | [adm-zip](https://github.com/cthackers/adm-zip) (theme install) |

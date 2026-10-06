@@ -39,16 +39,16 @@ function genUsername() {
   return `temp-${crypto.randomBytes(4).toString('hex')}`;
 }
 
-async function runJsonWithInput(argv, payload) {
-  const { stdout, stderr, code } = await cli.execMcpanelWithInput(
-    ['api', ...argv],
-    JSON.stringify(payload),
-  );
-  if (code !== 0 && !stdout) throw new Error(stderr || `mcpanel exited with code ${code}`);
-  let r;
-  try { r = JSON.parse(stdout); } catch { throw new Error(`Unexpected CLI output: ${stdout || stderr}`); }
-  if (!r || r.error || r.success === false) throw new Error((r && r.error) || 'Command failed');
+/** Throws the CLI's own message (and code) when it reported a failure. */
+function ensureOk(r) {
+  if (!r || r.error || r.success === false) {
+    throw new cli.CliError((r && r.error) || 'Command failed', (r && r.code) || 'error');
+  }
   return r;
+}
+
+async function runJsonWithInput(argv, payload) {
+  return ensureOk(await cli.runCliJsonWithInput(argv, JSON.stringify(payload)));
 }
 
 async function createTempAccount(user, password, role) {
@@ -59,7 +59,9 @@ async function createTempAccount(user, password, role) {
 }
 
 async function deleteTempAccount(user) {
-  return cli.runCliJson(['accounts', 'delete', '-u', user]);
+  // Checked, not fire-and-forget: a delete that failed in-band used to be
+  // reported as "removed", leaving a live admin credential behind.
+  return ensureOk(await cli.runCliJson(['accounts', 'delete', '-u', user]));
 }
 
 async function listSessionHashes(user) {

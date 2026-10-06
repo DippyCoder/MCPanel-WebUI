@@ -39,17 +39,22 @@
     if (!r.ok) {
       const err = new Error(r.error || 'Request failed');
       err.forbidden = !!r.forbidden;
+      err.code = r.code || 'error';
       throw err;
     }
     let parsed;
     try {
       parsed = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
     } catch {
-      throw new Error('The CLI returned output this panel could not read.');
+      throw Object.assign(new Error('The CLI returned output this panel could not read.'),
+                          { code: 'cli_bad_output' });
     }
-    // The accounts addon reports refusals in-band (`{"error": "..."}`) rather
-    // than by exiting non-zero, so the check has to happen after parsing.
-    if (parsed && parsed.error) throw new Error(parsed.error);
+    // Refusals arrive in-band as {"error": "...", "code": "..."}. The message
+    // is shown verbatim - the addon owns the wording - and the code rides
+    // along for any logic that wants it.
+    if (parsed && parsed.error) {
+      throw Object.assign(new Error(parsed.error), { code: parsed.code || 'error' });
+    }
     return parsed;
   }
 

@@ -18,6 +18,24 @@ const applog = require('./applog');
 
 const COOKIE_NAME = 'mcpanel_session';
 
+// The accounts addon ships separately from MCPanel-CLI. This message is the
+// WebUI explaining its *own* dependency, so it lives here; every other error
+// text comes from the CLI verbatim.
+const ACCOUNTS_ADDON_MISSING =
+  'Sign-in needs the MCPanel-Accounts addon, which is not installed in MCPanel-CLI. ' +
+  'Install it with: mclib mclib install accounts';
+
+/**
+ * Error codes that mean "the account store couldn't answer", as opposed to
+ * "it answered no". Those must not count against a user's sign-in budget.
+ * Everything else the addon reports (invalid_credentials, account_disabled,
+ * and any code a newer addon adds) is treated as a refused sign-in.
+ */
+function isInfrastructureCode(code) {
+  return code === 'internal_error' || code === 'unknown_command'
+    || code === 'accounts_addon_missing' || String(code || '').startsWith('cli_');
+}
+
 /**
  * argparse reads `-p <value>` as a missing argument when <value> itself starts
  * with a dash, which would make any password beginning with "-" unusable. The
@@ -47,21 +65,26 @@ async function accounts(args, secrets) {
     }
     return await cli.runCliJson(['accounts', ...args]);
   } catch (e) {
-    const msg = (e && e.message) || String(e);
-    // argparse's "invalid choice: 'accounts'" is what a CLI without the addon
-    // installed looks like. Say so plainly - "unexpected token < in JSON" would
-    // send someone hunting in entirely the wrong place.
-    if (/invalid choice: 'accounts'/.test(msg) || /unrecognized arguments/.test(msg)) {
-      throw new Error(
-        'The MCPanel-CLI accounts addon is not installed, so the panel cannot ' +
-        'authenticate anyone. Install/upgrade mcpanel-cli, then run: mcpanel addons list'
-      );
+    // The CLI reports a command it doesn't have as `unknown_command`; for the
+    // `accounts` group that can only mean the addon isn't installed/enabled.
+    if (e && e.code === 'unknown_command') {
+      throw new cli.CliError(ACCOUNTS_ADDON_MISSING, 'accounts_addon_missing');
     }
-    if (/mcpanel CLI not found/i.test(msg) || /ENOENT/.test(msg)) {
-      throw new Error('MCPanel-CLI is not installed - the panel cannot authenticate anyone.');
-    }
-    throw new Error(msg);
+    throw e;
   }
+}
+
+/**
+ * Like accounts(), but turns an error document from the addon into a thrown
+ * CliError carrying the addon's own message and code.
+ */
+async function accountsOrThrow(args, secrets) {
+  const r = await accounts(args, secrets);
+  if (r && r.error) {
+    if (r.code === 'unknown_command') throw new cli.CliError(ACCOUNTS_ADDON_MISSING, 'accounts_addon_missing');
+    throw new cli.CliError(String(r.error), r.code || 'error');
+  }
+  return r;
 }
 
 /**
@@ -208,12 +231,12 @@ if (sweeper.unref) sweeper.unref();
 /** Seeds the account store on first boot so a fresh install has admin/admin. */
 async function ensureSeeded() {
   try {
-    const r = await accounts(['init']);
+    const r = await accountsOrThrow(['init']);
     if (r && r.created) applog.info('Auth: account store initialised with the default admin account');
     return r;
   } catch (e) {
-    applog.warn(`Auth: could not initialise the account store - ${e.message}`);
-    return { error: e.message };
+    applog.warn(`Auth: could not initialise the account store [${e.code || 'error'}] - ${e.message}`);
+    return { error: e.message, code: e.code || 'error' };
   }
 }
 
@@ -224,11 +247,12 @@ async function ensureSeeded() {
 async function login(username, password, req) {
   const ip = clientIp(req);
   const blocked = rateLimitCheck(ip);
-  if (blocked) throw Object.assign(new Error(blocked), { rateLimited: true });
+  if (blocked) throw Object.assign(new Error(blocked), { rateLimited: true, code: 'rate_limited' });
 
   if (!username || !password) {
     recordFailure(ip);
-    throw new Error('Username and password are required');
+    throw Object.assign(new Error('Username and password are required'),
+                        { authFailure: true, code: 'invalid_arguments' });
   }
 
   const args = [
@@ -250,9 +274,18 @@ async function login(username, password, req) {
   }
 
   if (!r || !r.success || !r.token) {
+    const code = (r && r.code) || 'error';
+    // Show exactly what the addon said; only decide here whether it was the
+    // user's fault (counts toward the rate limit) or the backend's.
+    const message = (r && r.error) || 'Sign-in failed';
+    if (isInfrastructureCode(code)) {
+      applog.error(`Auth: sign-in for "${username}" failed in the account store [${code}] - ${message}`);
+      if (code === 'unknown_command') throw new cli.CliError(ACCOUNTS_ADDON_MISSING, 'accounts_addon_missing');
+      throw new cli.CliError(message, code);
+    }
     recordFailure(ip);
-    applog.warn(`Auth: failed sign-in for "${username}" from ${ip}`);
-    throw new Error((r && r.error) || 'Incorrect username or password');
+    applog.warn(`Auth: failed sign-in for "${username}" from ${ip} [${code}]`);
+    throw Object.assign(new cli.CliError(message, code), { authFailure: true });
   }
 
   recordSuccess(ip);
@@ -275,7 +308,13 @@ async function verify(token) {
   } catch (e) {
     // Do not cache infrastructure failures as "invalid session" - that would
     // silently sign everyone out for 5s every time the CLI hiccups.
-    applog.error(`Auth: session check failed - ${e.message}`);
+    applog.error(`Auth: session check failed [${e.code || 'error'}] - ${e.message}`);
+    return null;
+  }
+  // Same for an error the addon reported (locked database, …): that's "could
+  // not check", not "invalid". `verify` answers {valid:false} for a bad token.
+  if (r && r.error) {
+    applog.error(`Auth: session check failed [${r.code || 'error'}] - ${r.error}`);
     return null;
   }
 
@@ -306,14 +345,16 @@ async function logout(token) {
  * refusal is passed straight through rather than second-guessed here.
  */
 async function changePassword(username, currentPassword, newPassword, token) {
-  if (!newPassword) throw new Error('A new password is required');
-  const r = await accounts([
+  if (!newPassword) {
+    throw Object.assign(new Error('A new password is required'), { code: 'password_required' });
+  }
+  const r = await accountsOrThrow([
     'passwd',
     ...flag('-u', username),
     '--password-stdin',
   ], { password: newPassword, current: currentPassword || '' });
-  if (!r || r.error || r.success === false) {
-    throw new Error((r && r.error) || 'Password change failed');
+  if (!r || r.success === false) {
+    throw new cli.CliError('Password change failed', 'error');
   }
   // The addon revokes sessions on a password change; drop our cached copies so
   // the change takes effect now rather than after the cache TTL.
@@ -431,6 +472,7 @@ function clearSessionCookie(res, req) {
 
 module.exports = {
   COOKIE_NAME,
+  ACCOUNTS_ADDON_MISSING,
   SYSTEM_USER,
   ensureSeeded,
   login,

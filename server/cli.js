@@ -17,6 +17,61 @@ const applog = require('./applog');
 
 const EXE = process.platform === 'win32' ? 'mcpanel.exe' : 'mcpanel';
 
+/**
+ * A failure carrying the CLI's error contract: `message` is the ready-to-show
+ * text and `code` the stable identifier (`mcpanel api errors` lists them).
+ *
+ * The WebUI never maps codes to its own wording - it shows whatever text the
+ * CLI sent, so an error introduced by a newer CLI still reads correctly here.
+ * The only codes minted on this side are the ones the CLI can't report itself
+ * because it never ran or produced nothing usable (cli_unavailable,
+ * cli_failed, cli_bad_output).
+ */
+class CliError extends Error {
+  constructor(message, code = 'error', extra = {}) {
+    super(message);
+    this.name = 'CliError';
+    this.code = code;
+    Object.assign(this, extra);
+  }
+}
+
+/** The CLI's own error document from stdout, if it printed one. */
+function parseErrorDoc(stdout) {
+  if (!stdout) return null;
+  // Streaming commands print progress lines first; the result is the last line.
+  const last = stdout.trim().split('\n').pop();
+  try {
+    const doc = JSON.parse(last);
+    return doc && typeof doc === 'object' && doc.error ? doc : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Turns a finished CLI run that failed into a CliError. */
+function errorFromRun({ stdout, stderr, code, spawnError }) {
+  if (spawnError) {
+    return new CliError(`MCPanel-CLI could not be started: ${spawnError.message}`, 'cli_unavailable');
+  }
+  const doc = parseErrorDoc(stdout);
+  if (doc) {
+    const { error, code: docCode, ...extra } = doc;
+    return new CliError(String(error), docCode || 'error', extra);
+  }
+  return new CliError(stderr || `mcpanel exited with code ${code}`, 'cli_failed');
+}
+
+/** JSON.parse for CLI output, failing with a readable CliError instead of a SyntaxError. */
+function parseCliJson(stdout, stderr) {
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    const shown = (stdout || stderr || '').trim().slice(0, 300) || '(no output)';
+    throw new CliError(`MCPanel-CLI returned unreadable output: ${shown}`, 'cli_bad_output');
+  }
+}
+
 // On Windows, pip --user installs to %APPDATA%\Python\Python3XX\Scripts\ which
 // is not on PATH by default. Enumerate the common locations so mcpanel is
 // always found regardless of whether the user updated their PATH.
@@ -178,11 +233,18 @@ function execMcpanelWithInput(argv, input) {
   });
 }
 
+/**
+ * Like runCliJson, with `input` on stdin. Resolves the parsed document - an
+ * error document ({error, code}) included, so callers can branch on `code`.
+ */
 async function runCliJsonWithInput(args, input) {
   const argv = ['api', ...args];
-  const { stdout, stderr, code } = await execMcpanelWithInput(argv, input);
-  if (!stdout && code !== 0) throw new Error(stderr || `mcpanel exited with code ${code}`);
-  return JSON.parse(stdout);
+  const run = await execMcpanelWithInput(argv, input);
+  if (!run.stdout) {
+    if (run.code !== 0 || run.spawnError) throw errorFromRun(run);
+    throw new CliError('MCPanel-CLI produced no output', 'cli_bad_output');
+  }
+  return parseCliJson(run.stdout, run.stderr);
 }
 
 /** Spawns `mcpanel <argv...>` with piped stdout - for streaming subcommands. */
@@ -206,19 +268,30 @@ async function runCli(args) {
   const isFetch = argv[1] === 'fetch';
   if (!isFetch) applog.info(`run_cli: mcpanel ${argv.join(' ')}`);
 
-  const { stdout, stderr, code } = await execMcpanel(argv);
-  if (!stdout && code !== 0) {
-    if (isFetch) applog.error(`run_cli: mcpanel ${argv.join(' ')} failed: ${stderr}`);
-    else applog.error(`  error: ${stderr}`);
-    throw new Error(stderr || `mcpanel exited with code ${code}`);
+  const run = await execMcpanel(argv);
+  const { stdout, stderr, code } = run;
+  if (!stdout && (code !== 0 || run.spawnError)) {
+    const err = errorFromRun(run);
+    if (isFetch) applog.error(`run_cli: mcpanel ${argv.join(' ')} failed: ${err.message}`);
+    else applog.error(`  error [${err.code}]: ${err.message}`);
+    throw err;
+  }
+  // A CLI-reported failure still arrives as a normal value (the frontend
+  // checks `.error`); log its code so the panel log shows what happened.
+  if (code !== 0 && !isFetch) {
+    const doc = parseErrorDoc(stdout);
+    if (doc) applog.warn(`  failed [${doc.code || 'error'}]: ${doc.error}`);
   }
   if (!isFetch) applog.info(`  ok (${stdout.length} bytes)`);
   return stdout;
 }
 
-/** `run_cli` + JSON.parse, the shape most callers actually want. */
+/**
+ * `run_cli` + JSON.parse, the shape most callers actually want. A CLI error
+ * document ({error, code}) is returned, not thrown.
+ */
 async function runCliJson(args) {
-  return JSON.parse(await runCli(args));
+  return parseCliJson(await runCli(args));
 }
 
 /**
@@ -231,6 +304,7 @@ async function checkCli() {
     applog.warn('check_cli: MCPanel-CLI not found on this system');
     return {
       ok: false,
+      code: 'cli_unavailable',
       error: 'mcpanel CLI not found. Install it from https://github.com/DippyCoder/mcpanel-cli',
     };
   }
@@ -251,6 +325,9 @@ async function checkCli() {
 }
 
 module.exports = {
+  CliError,
+  errorFromRun,
+  parseErrorDoc,
   findCliPath,
   cliProgram,
   cliEnv,
